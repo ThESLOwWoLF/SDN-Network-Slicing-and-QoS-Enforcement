@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SDN QoS Network Slicing Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-bg: #1e1e24;
+            --text-color: #ffffff;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            font-weight: 300;
+            margin-bottom: 5px;
+            letter-spacing: 1px;
+        }
+
+        p.subtitle {
+            color: #9ca3af;
+            margin-bottom: 30px;
+        }
+
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        .card {
+            background-color: var(--panel-bg);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .card h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #e5e7eb;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 250px;
+            position: relative;
+        }
+
+        .stats {
+            margin-top: 15px;
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #ef4444; /* red by default */
+            margin-right: 8px;
+        }
+
+        .status-indicator.connected {
+            background-color: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+        }
+
+        #connection-status {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 0.9rem;
+            color: #9ca3af;
+            display: flex;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="connection-status">
+        <span class="status-indicator" id="status-dot"></span>
+        <span id="status-text">Disconnected</span>
+    </div>
+
+    <h1>SDN Network Slicing</h1>
+    <p class="subtitle">Live QoS Monitoring Dashboard (Ryu + Mininet)</p>
+
+    <div class="dashboard-container">
+        <!-- Slice 1: Premium Video/Voice -->
+        <div class="card" style="border-top: 4px solid var(--accent-green);">
+            <h2>Slice 1: Premium (UDP 5001)</h2>
+            <p style="color: #9ca3af; font-size: 0.85rem; margin-top: -10px;">Guaranteed BW, Low Latency</p>
+            <div class="chart-container">
+                <canvas id="chartQ1"></canvas>
+            </div>
+            <div class="stats" style="color: var(--accent-green);"><span id="bwQ1">0.00</span> Mbps</div>
+        </div>
+
+        <!-- Slice 2: Standard/File Transfer -->
+        <div class="card" style="border-top: 4px solid var(--accent-blue);">
+            <h2>Slice 2: Standard (TCP 5002)</h2>
+            <p style="color: #9ca3af; font-size: 0.85rem; margin-top: -10px;">Capped Bandwidth limit</p>
+            <div class="chart-container">
+                <canvas id="chartQ2"></canvas>
+            </div>
+            <div class="stats" style="color: var(--accent-blue);"><span id="bwQ2">0.00</span> Mbps</div>
+        </div>
+
+        <!-- Slice 3: Best Effort -->
+        <div class="card" style="border-top: 4px solid var(--accent-orange);">
+            <h2>Default: Best Effort</h2>
+            <p style="color: #9ca3af; font-size: 0.85rem; margin-top: -10px;">Unclassified Traffic</p>
+            <div class="chart-container">
+                <canvas id="chartQ0"></canvas>
+            </div>
+            <div class="stats" style="color: var(--accent-orange);"><span id="bwQ0">0.00</span> Mbps</div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const POLLING_INTERVAL_MS = 2000;
+        const RYU_API_URL = 'http://localhost:8080/qos/stats';
+        const MAX_DATA_POINTS = 20;
+
+        // State tracking
+        let prevStats = null;
+        let lastTimestamp = 0;
+
+        // Chart.js Configuration
+        Chart.defaults.color = '#9ca3af';
+        Chart.defaults.font.family = "'Segoe UI', sans-serif";
+
+        function createChart(ctxId, color) {
+            const ctx = document.getElementById(ctxId).getContext('2d');
+            return new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array(MAX_DATA_POINTS).fill(''),
+                    datasets: [{
+                        label: 'Bandwidth (Mbps)',
+                        data: Array(MAX_DATA_POINTS).fill(0),
+                        borderColor: color,
+                        backgroundColor: color + '33', // 20% opacity
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            suggestedMax: 12, // 10Mbps link + margin
+                            grid: { color: '#374151' }
+                        },
+                        x: {
+                            grid: { display: false }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    animation: {
+                        duration: 0 // Disable animation for smoother live updates
+                    }
+                }
+            });
+        }
+
+        const charts = {
+            1: createChart('chartQ1', '#10b981'), // Premium
+            2: createChart('chartQ2', '#3b82f6'), // Standard
+            0: createChart('chartQ0', '#f59e0b')  // Best Effort
+        };
+
+        const bwDisplays = {
+            1: document.getElementById('bwQ1'),
+            2: document.getElementById('bwQ2'),
+            0: document.getElementById('bwQ0')
+        };
+
+        function updateChartData(queueId, bwMbps) {
+            const chart = charts[queueId];
+            const dataArr = chart.data.datasets[0].data;
+            
+            dataArr.shift(); // Remove oldest
+            dataArr.push(bwMbps); // Add new
+            
+            chart.update();
+            bwDisplays[queueId].innerText = bwMbps.toFixed(2);
+        }
+
+        function setConnectionStatus(isConnected) {
+            const dot = document.getElementById('status-dot');
+            const text = document.getElementById('status-text');
+            if (isConnected) {
+                dot.classList.add('connected');
+                text.innerText = 'Connected to Controller';
+            } else {
+                dot.classList.remove('connected');
+                text.innerText = 'Disconnected (Check Ryu)';
+            }
+        }
+
+        async function fetchStats() {
+            try {
+                const response = await fetch(RYU_API_URL);
+                if (!response.ok) throw new Error('Network response was not ok');
+                const data = await response.json();
+                
+                setConnectionStatus(true);
+                
+                const now = Date.now();
+                
+                if (prevStats && lastTimestamp) {
+                    const timeDiffSec = (now - lastTimestamp) / 1000;
+                    
+                    // We only care about switch 1 (dpid 1), and let's aggregate stats from all ports
+                    // or just specifically port 3/4 if we want. For simplicity, we'll aggregate tx_bytes per queue across all ports.
+                    
+                    const currentQueues = {0: 0, 1: 0, 2: 0};
+                    const prevQueues = {0: 0, 1: 0, 2: 0};
+
+                    const dpid = "1";
+                    
+                    if (data[dpid]) {
+                        for (const port in data[dpid]) {
+                            for (const q in data[dpid][port]) {
+                                currentQueues[q] += data[dpid][port][q];
+                            }
+                        }
+                    }
+
+                    if (prevStats[dpid]) {
+                        for (const port in prevStats[dpid]) {
+                            for (const q in prevStats[dpid][port]) {
+                                prevQueues[q] += prevStats[dpid][port][q];
+                            }
+                        }
+                    }
+
+                    // Calculate Bandwidth in Mbps = (bytes * 8) / (1000000 * timeDiff)
+                    for (const q of [0, 1, 2]) {
+                        const bytesDiff = currentQueues[q] - prevQueues[q];
+                        // prevent negative spikes if counters reset
+                        let bwMbps = 0;
+                        if (bytesDiff >= 0) {
+                             bwMbps = (bytesDiff * 8) / (1000000 * timeDiffSec);
+                        }
+                        updateChartData(q, bwMbps);
+                    }
+                }
+
+                prevStats = data;
+                lastTimestamp = now;
+
+            } catch (error) {
+                console.error('Error fetching stats:', error);
+                setConnectionStatus(false);
+                // Zero out the charts if disconnected
+                for (const q of [0, 1, 2]) {
+                    updateChartData(q, 0);
+                }
+            }
+        }
+
+        // Start polling
+        setInterval(fetchStats, POLLING_INTERVAL_MS);
+        
+    </script>
+</body>
+</html>
